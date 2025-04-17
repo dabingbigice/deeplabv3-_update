@@ -191,26 +191,169 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import DeformConv2d
 
-# 可变形深度可分离卷积+空洞卷积
-class DeformableDepthwiseConv(nn.Module):
-    """可变形深度可分离卷积（Deformable Depthwise Separable Conv）"""
+# # 可变形深度可分离卷积+空洞卷积
+# class DeformableDepthwiseConv(nn.Module):
+#     """可变形深度可分离卷积（Deformable Depthwise Separable Conv）"""
+#
+#     def __init__(self, in_channels, out_channels, dilation=1):
+#         super().__init__()
+#         # Offset生成网络（适配深度可分离）
+#         self.offset_conv = nn.Sequential(
+#             nn.Conv2d(in_channels, 2 * 3 * 3 * in_channels,  # Offset通道数=2*K*K*C_in
+#                       kernel_size=3, padding=dilation, dilation=dilation),
+#             nn.BatchNorm2d(2 * 3 * 3 * in_channels),
+#             nn.ReLU(inplace=True)
+#         )
+#         # 可变形深度卷积（groups=in_channels）
+#         self.deform_conv = DeformConv2d(
+#             in_channels, in_channels, kernel_size=3,
+#             padding=dilation, dilation=dilation,
+#             groups=in_channels  # 关键：分组数=输入通道数
+#         )
+#         # 逐点卷积调整通道
+#         self.pointwise = nn.Sequential(
+#             nn.Conv2d(in_channels, out_channels, 1, bias=False),
+#             nn.BatchNorm2d(out_channels),
+#             nn.ReLU(inplace=True)
+#         )
+#
+#     def forward(self, x):
+#         offset = self.offset_conv(x)
+#         x = self.deform_conv(x, offset)
+#         return self.pointwise(x)
+#
+#
+# class ASPP_Enhanced(nn.Module):
+#     def __init__(self, dim_in, dim_out, rate=1, bn_mom=0.1):
+#         super().__init__()
+#
+#         # --------------------------------
+#         # 分支1：普通1x1卷积（保持基础特征）
+#         # --------------------------------
+#         self.branch1 = nn.Sequential(
+#             nn.Conv2d(dim_in, dim_out, 1, bias=False),
+#             nn.BatchNorm2d(dim_out, momentum=bn_mom),
+#             nn.ReLU(inplace=True)
+#         )
+#
+#         # --------------------------------
+#         # 分支2：可变形3x3空洞卷积（增强空间适应性）
+#         # --------------------------------
+#         self.branch2 = nn.Sequential(
+#             DeformConv2d(dim_in, dim_out, kernel_size=3,
+#                          padding=6 * rate, dilation=6 * rate),
+#             nn.BatchNorm2d(dim_out, momentum=bn_mom),
+#             nn.ReLU(inplace=True)
+#         )
+#
+#         # --------------------------------
+#         # 分支3：深度可分离+空洞（轻量化多尺度）
+#         # --------------------------------
+#         self.branch3 = nn.Sequential(
+#             # 深度卷积（分组=输入通道）
+#             nn.Conv2d(dim_in, dim_in, 3, padding=12 * rate,
+#                       dilation=12 * rate, groups=dim_in, bias=False),
+#             nn.BatchNorm2d(dim_in, momentum=bn_mom),
+#             nn.ReLU(inplace=True),
+#             # 逐点卷积调整通道
+#             nn.Conv2d(dim_in, dim_out, 1, bias=False),
+#             nn.BatchNorm2d(dim_out, momentum=bn_mom),
+#             nn.ReLU(inplace=True)
+#         )
+#
+#         # --------------------------------
+#         # 分支4：可变形深度可分离+空洞（创新组合）
+#         # --------------------------------
+#         self.branch4 = DeformableDepthwiseConv(dim_in, dim_out, dilation=18 * rate)
+#
+#         # --------------------------------
+#         # 分支5：全局上下文（保持原结构）
+#         # --------------------------------
+#         self.branch5 = nn.Sequential(
+#             nn.AdaptiveAvgPool2d(1),
+#             nn.Conv2d(dim_in, dim_out, 1, bias=False),
+#             nn.BatchNorm2d(dim_out, momentum=bn_mom),
+#             nn.ReLU(inplace=True)
+#         )
+#
+#         # --------------------------------
+#         # 特征融合
+#         # --------------------------------
+#         self.fusion = nn.Sequential(
+#             nn.Conv2d(5 * dim_out, dim_out, 1, bias=False),
+#             nn.BatchNorm2d(dim_out, momentum=bn_mom),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(0.5)
+#         )
+#
+#     def forward(self, x):
+#         b, c, h, w = x.shape
+#
+#         # 分支1-4前向计算
+#         conv1x1 = self.branch1(x)  # [B,C_out,H,W]
+#         deform_out = self.branch2(x)  # [B,C_out,H,W]
+#         depthwise_out = self.branch3(x)  # [B,C_out,H,W]
+#         deform_depth_out = self.branch4(x)  # [B,C_out,H,W]
+#
+#         # 分支5：全局特征
+#         global_feat = self.branch5(x)  # [B,C_out,1,1]
+#         global_feat = F.interpolate(global_feat, (h, w), mode='bilinear', align_corners=True)
+#
+#         # 特征拼接与融合
+#         concat = torch.cat([conv1x1, deform_out, depthwise_out, deform_depth_out, global_feat], dim=1)
+#         return self.fusion(concat)
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision.ops import DeformConv2d
 
+# --------------------------------
+# 可变形卷积模块（含Offset生成）
+# --------------------------------
+class DeformableConv(nn.Module):
     def __init__(self, in_channels, out_channels, dilation=1):
         super().__init__()
-        # Offset生成网络（适配深度可分离）
+        # Offset生成网络
         self.offset_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 2 * 3 * 3 * in_channels,  # Offset通道数=2*K*K*C_in
+            nn.Conv2d(in_channels, 2 * 3 * 3,  # 2*K*K (K=3)
                       kernel_size=3, padding=dilation, dilation=dilation),
-            nn.BatchNorm2d(2 * 3 * 3 * in_channels),
+            nn.BatchNorm2d(2 * 3 * 3),
             nn.ReLU(inplace=True)
         )
-        # 可变形深度卷积（groups=in_channels）
+        # 可变形卷积
         self.deform_conv = DeformConv2d(
-            in_channels, in_channels, kernel_size=3,
-            padding=dilation, dilation=dilation,
-            groups=in_channels  # 关键：分组数=输入通道数
+            in_channels, out_channels,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation
         )
-        # 逐点卷积调整通道
+
+    def forward(self, x):
+        offset = self.offset_conv(x)  # [B, 18, H, W]
+        return self.deform_conv(x, offset)
+
+# --------------------------------
+# 可变形深度可分离卷积模块（修复分支4）
+# --------------------------------
+class DeformableDepthwiseConv(nn.Module):
+    def __init__(self, in_channels, out_channels, dilation=1):
+        super().__init__()
+        # Offset生成网络（适配深度卷积）
+        self.offset_conv = nn.Sequential(
+            nn.Conv2d(in_channels, 2 * 3 * 3*in_channels,  # 2*K*K*C_in
+                      kernel_size=3, padding=dilation, dilation=dilation),
+            nn.BatchNorm2d(2 * 3 * 3*in_channels),
+            nn.ReLU(inplace=True)
+        )
+        # 可变形深度卷积（分组=输入通道）
+        self.deform_conv = DeformConv2d(
+            in_channels, in_channels,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation,
+            groups=in_channels  # 深度卷积
+        )
+        # 逐点卷积
         self.pointwise = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 1, bias=False),
             nn.BatchNorm2d(out_channels),
@@ -222,65 +365,46 @@ class DeformableDepthwiseConv(nn.Module):
         x = self.deform_conv(x, offset)
         return self.pointwise(x)
 
-
+# --------------------------------
+# 修复后的ASPP模块
+# --------------------------------
 class ASPP_Enhanced(nn.Module):
     def __init__(self, dim_in, dim_out, rate=1, bn_mom=0.1):
         super().__init__()
-
-        # --------------------------------
-        # 分支1：普通1x1卷积（保持基础特征）
-        # --------------------------------
+        # 分支1：普通1x1卷积
         self.branch1 = nn.Sequential(
             nn.Conv2d(dim_in, dim_out, 1, bias=False),
             nn.BatchNorm2d(dim_out, momentum=bn_mom),
             nn.ReLU(inplace=True)
         )
-
-        # --------------------------------
-        # 分支2：可变形3x3空洞卷积（增强空间适应性）
-        # --------------------------------
+        # 分支2：可变形卷积（带Offset）
         self.branch2 = nn.Sequential(
-            DeformConv2d(dim_in, dim_out, kernel_size=3,
-                         padding=6 * rate, dilation=6 * rate),
+            DeformableConv(dim_in, dim_out, dilation=6*rate),
             nn.BatchNorm2d(dim_out, momentum=bn_mom),
             nn.ReLU(inplace=True)
         )
-
-        # --------------------------------
-        # 分支3：深度可分离+空洞（轻量化多尺度）
-        # --------------------------------
+        # 分支3：深度可分离+空洞
         self.branch3 = nn.Sequential(
-            # 深度卷积（分组=输入通道）
-            nn.Conv2d(dim_in, dim_in, 3, padding=12 * rate,
-                      dilation=12 * rate, groups=dim_in, bias=False),
+            nn.Conv2d(dim_in, dim_in, 3, padding=12*rate,
+                     dilation=12*rate, groups=dim_in, bias=False),
             nn.BatchNorm2d(dim_in, momentum=bn_mom),
             nn.ReLU(inplace=True),
-            # 逐点卷积调整通道
             nn.Conv2d(dim_in, dim_out, 1, bias=False),
             nn.BatchNorm2d(dim_out, momentum=bn_mom),
             nn.ReLU(inplace=True)
         )
-
-        # --------------------------------
-        # 分支4：可变形深度可分离+空洞（创新组合）
-        # --------------------------------
-        self.branch4 = DeformableDepthwiseConv(dim_in, dim_out, dilation=18 * rate)
-
-        # --------------------------------
-        # 分支5：全局上下文（保持原结构）
-        # --------------------------------
+        # 分支4：可变形深度可分离
+        self.branch4 = DeformableDepthwiseConv(dim_in, dim_out, dilation=18*rate)
+        # 分支5：全局上下文
         self.branch5 = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(dim_in, dim_out, 1, bias=False),
             nn.BatchNorm2d(dim_out, momentum=bn_mom),
             nn.ReLU(inplace=True)
         )
-
-        # --------------------------------
         # 特征融合
-        # --------------------------------
         self.fusion = nn.Sequential(
-            nn.Conv2d(5 * dim_out, dim_out, 1, bias=False),
+            nn.Conv2d(5*dim_out, dim_out, 1, bias=False),
             nn.BatchNorm2d(dim_out, momentum=bn_mom),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5)
@@ -288,18 +412,15 @@ class ASPP_Enhanced(nn.Module):
 
     def forward(self, x):
         b, c, h, w = x.shape
-
-        # 分支1-4前向计算
-        conv1x1 = self.branch1(x)  # [B,C_out,H,W]
-        deform_out = self.branch2(x)  # [B,C_out,H,W]
-        depthwise_out = self.branch3(x)  # [B,C_out,H,W]
-        deform_depth_out = self.branch4(x)  # [B,C_out,H,W]
-
-        # 分支5：全局特征
-        global_feat = self.branch5(x)  # [B,C_out,1,1]
+        # 各分支前向
+        conv1x1 = self.branch1(x)
+        deform_out = self.branch2(x)
+        depthwise_out = self.branch3(x)
+        deform_depth_out = self.branch4(x)
+        # 全局特征
+        global_feat = self.branch5(x)
         global_feat = F.interpolate(global_feat, (h, w), mode='bilinear', align_corners=True)
-
-        # 特征拼接与融合
+        # 特征融合
         concat = torch.cat([conv1x1, deform_out, depthwise_out, deform_depth_out, global_feat], dim=1)
         return self.fusion(concat)
 class DeepLab(nn.Module):

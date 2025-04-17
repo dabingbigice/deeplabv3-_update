@@ -330,7 +330,7 @@ class DeepLab(nn.Module):
         #   ASPP特征提取模块
         #   利用不同膨胀率的膨胀卷积进行特征提取
         #-----------------------------------------#
-        self.aspp = ASPP(dim_in=in_channels, dim_out=256, rate=16//downsample_factor)
+        self.aspp = ASPP_Enhanced(dim_in=in_channels, dim_out=256, rate=16//downsample_factor)
         
         #----------------------------------#
         #   浅层特征边
